@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = '["http://localhost:5173"]'
     GEMINI_API_KEY: str = ""
     GEMINI_MODEL: str = "gemini-2.0-flash"
+    OPENROUTER_API_KEY: str = ""
+    OPENROUTER_MODEL: str = "nvidia/nemotron-3-super-120b-a12b:free"
 
     @property
     def cors_origins_list(self) -> List[str]:

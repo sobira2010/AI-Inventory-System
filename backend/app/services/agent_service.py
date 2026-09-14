@@ -13,8 +13,10 @@ response.  No manual iteration over function_call parts is needed.
 
 import json
 import logging
+import re
 from typing import Optional, Callable
 from google.genai import types
+from google.genai.errors import ClientError
 from sqlalchemy.orm import Session
 from app.config import settings
 
@@ -23,8 +25,43 @@ from app.services.gemini_service import (
     SYSTEM_PROMPT,
 )
 from app.services import agent_tools
+from app.services import openrouter_service
 
 logger = logging.getLogger(__name__)
+
+
+# ── Custom exception for Gemini quota exhaustion ────────────────────
+class GeminiQuotaExceeded(Exception):
+    """Raised when the Gemini API returns HTTP 429 RESOURCE_EXHAUSTED."""
+
+    def __init__(self, message: str, retry_after_seconds: Optional[int] = None):
+        self.message = message
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__(message)
+
+
+def _is_quota_exceeded(exc: Exception) -> bool:
+    """Check whether an exception represents a Gemini 429 quota error."""
+    if not isinstance(exc, ClientError):
+        return False
+    if exc.code == 429:
+        return True
+    # Fallback: check the status string in case code is not set
+    if getattr(exc, "status", None) and "RESOURCE_EXHAUSTED" in str(exc.status).upper():
+        return True
+    return False
+
+
+def _extract_retry_delay(exc: Exception) -> Optional[int]:
+    """Try to extract a retry delay in seconds from the Gemini error details."""
+    try:
+        msg = str(exc.message) or str(exc)
+        match = re.search(r'retry\s+in\s+(\d+)\s*sec', msg, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    except Exception:
+        pass
+    return None
 
 # In-memory conversation store: {user_id: [messages]}
 _conversations: dict[int, list[dict]] = {}
@@ -265,6 +302,69 @@ def _detect_action(text: str) -> str:
     return "unknown"
 
 
+def _try_openrouter_fallback(message: str, user_id: int) -> Optional[dict]:
+    """Attempt to handle the message via OpenRouter / Nemotron 3.
+
+    Returns a result dict on success, or None if OpenRouter is not
+    configured or also fails.
+    """
+    if not settings.OPENROUTER_API_KEY:
+        logger.info("OpenRouter not configured — skipping fallback.")
+        return None
+
+    try:
+        history = get_conversation_history(user_id)
+        # Pass the google-genai Tool objects — openrouter_service
+        # converts them to OpenAI format internally.
+        from app.services.gemini_service import build_tools_schema
+        tools_schema = build_tools_schema()
+
+        response = openrouter_service.send_message(
+            message=message,
+            history=history,
+            tools=tools_schema,
+            tool_callables=TOOL_CALLABLES,
+        )
+
+        # Extract text — response is an OpenRouterResponse wrapper
+        ai_text = ""
+        if response.candidates and response.candidates[0].content:
+            parts = response.candidates[0].content.parts
+            text_parts = [p.text for p in parts if p.text]
+            ai_text = "\n".join(text_parts) if text_parts else ""
+
+        if not ai_text:
+            ai_text = "I completed the operation."
+
+        action_type = _detect_action(ai_text)
+        needs_confirmation = False
+        confirmation_type = None
+
+        if "delete confirmation" in ai_text.lower() or (
+            "confirm" in ai_text.lower() and "delet" in ai_text.lower()
+        ):
+            needs_confirmation = True
+            confirmation_type = "delete"
+            action_type = "delete_product"
+
+        add_to_history(user_id, "user", message)
+        add_to_history(user_id, "assistant", ai_text)
+
+        logger.info("OpenRouter fallback succeeded.")
+        return {
+            "message": ai_text,
+            "action": action_type,
+            "success": True,
+            "data": None,
+            "needs_confirmation": needs_confirmation,
+            "confirmation_type": confirmation_type,
+        }
+
+    except Exception as e:
+        logger.error(f"OpenRouter fallback failed: {e}")
+        return None
+
+
 def process_message(message: str, db: Session, user_id: int) -> dict:
     """
     Process a user message through the AI agent.
@@ -369,6 +469,35 @@ def process_message(message: str, db: Session, user_id: int) -> dict:
             "data": tool_data,
             "needs_confirmation": needs_confirmation,
             "confirmation_type": confirmation_type,
+        }
+
+    except ClientError as e:
+        # ── Gemini API client error — check for quota exhaustion ────
+        if _is_quota_exceeded(e):
+            logger.warning("Gemini API quota exceeded — trying OpenRouter fallback.")
+            # Attempt fallback to OpenRouter / Nemotron 3
+            fallback_result = _try_openrouter_fallback(
+                message=message, user_id=user_id,
+            )
+            if fallback_result is not None:
+                return fallback_result
+            # OpenRouter also failed or not configured
+            retry = _extract_retry_delay(e)
+            raise GeminiQuotaExceeded(
+                message="The AI service quota has been reached. Please try again later.",
+                retry_after_seconds=retry,
+            ) from e
+        # Other Gemini client errors (bad request, auth, server, etc.)
+        logger.error(f"Gemini client error: {e}")
+        error_msg = "The AI service is temporarily unavailable. Please try again."
+        add_to_history(user_id, "user", message)
+        add_to_history(user_id, "assistant", error_msg)
+        return {
+            "message": error_msg,
+            "action": "error",
+            "success": False,
+            "data": None,
+            "needs_confirmation": False,
         }
 
     except Exception as e:

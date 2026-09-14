@@ -66,8 +66,13 @@ function AIChatbot() {
         errorMsg = 'Your session has expired. Please log in again.'
       } else if (err.response?.status === 403) {
         errorMsg = 'You do not have permission to perform this action.'
+      } else if (err.response?.status === 429) {
+        const detail = err.response.data?.detail
+        const baseMsg = (typeof detail === 'object' && detail?.message) || 'The AI service quota has been reached. Please try again later.'
+        errorMsg = `${baseMsg}\nYour inventory data and other non-AI features are still available.`
       } else if (err.response?.data?.detail) {
-        errorMsg = err.response.data.detail
+        const detail = err.response.data.detail
+        errorMsg = typeof detail === 'object' ? (detail.message || 'An error occurred.') : detail
       } else if (err.message) {
         errorMsg = `Error: ${err.message}`
       }

@@ -6,7 +6,7 @@ from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.user import User
 from app.schemas.agent import AgentChatRequest, AgentChatResponse
-from app.services.agent_service import process_message, clear_conversation
+from app.services.agent_service import process_message, clear_conversation, GeminiQuotaExceeded
 
 router = APIRouter(prefix="/api/agent", tags=["AI Agent"])
 
@@ -39,10 +39,25 @@ def agent_chat(
             confirmation_type=result.get("confirmation_type"),
         )
 
+    except GeminiQuotaExceeded as e:
+        detail = {
+            "code": "AI_QUOTA_EXCEEDED",
+            "message": e.message,
+        }
+        if e.retry_after_seconds is not None:
+            detail["retry_after_seconds"] = e.retry_after_seconds
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=detail,
+        )
+
+    except HTTPException:
+        raise
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Agent error: {str(e)}",
+            detail="Agent error: an unexpected error occurred.",
         )
 
 
