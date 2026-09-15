@@ -4,6 +4,7 @@ import { useAuth } from './context/AuthContext.jsx'
 import ProtectedRoute from './routes/ProtectedRoute.jsx'
 
 // Pages
+import Home from './pages/Home.jsx'
 import Login from './pages/Login.jsx'
 import Register from './pages/Register.jsx'
 import Dashboard from './pages/Dashboard.jsx'
@@ -35,6 +36,7 @@ function App() {
     <>
       <Toaster position="top-right" />
       <Routes>
+        <Route path="/" element={<Home />} />
         <Route path="/login" element={!user ? <Login /> : <Navigate to="/dashboard" />} />
         <Route path="/register" element={!user ? <Register /> : <Navigate to="/dashboard" />} />
 
