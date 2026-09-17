@@ -48,7 +48,7 @@ AI-Inventory-System/
 
 ## Prerequisites
 
-- Python 3.10+
+- Python 3.13.4
 - Node.js 18+
 - A [Neon PostgreSQL](https://neon.tech) account and database
 
