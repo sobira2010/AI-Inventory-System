@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
+from app.middleware import CORSErrorResponseMiddleware
 from app.routers import auth, products, sales, stock, dashboard, ai
 from app.api import agent
 
@@ -12,7 +13,13 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# CORS
+# Middleware is added before the app starts serving requests, at import time.
+# Order matters: add_middleware() prepends, so the LAST middleware added is the
+# OUTERMOST. CORSMiddleware is added first (inner) and CORSErrorResponseMiddleware
+# last (outer), so unhandled exceptions and other error responses pass through the
+# error middleware on the way out and get Access-Control-Allow-Origin stamped on,
+# instead of bypassing CORS entirely and surfacing in the browser as
+# "No 'Access-Control-Allow-Origin' header is present".
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
@@ -20,6 +27,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(CORSErrorResponseMiddleware)
 
 # Include routers
 app.include_router(auth.router)
