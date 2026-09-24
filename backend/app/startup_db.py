@@ -21,6 +21,7 @@ Secrets are never logged: only the URL scheme is printed.
 """
 
 import logging
+import os
 
 from alembic import command
 from alembic.config import Config
@@ -29,15 +30,20 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_ALEMBIC_DIR = "alembic"
+# Resolve the migrations directory from this file's location so the startup
+# hook works regardless of the process working directory (Render, Docker,
+# systemd units, etc. may all start uvicorn from different cwd's).
+_ALEMBIC_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "alembic"
+)
 
 
 def _make_config(db_url: str) -> Config:
     """Build an Alembic Config pointing at the project's migrations.
 
     Percent signs are escaped for configparser interpolation (passwords can
-    contain them). The working directory is the backend/ root at startup, so
-    the relative script_location resolves to backend/alembic.
+    contain them). script_location is an absolute path (see _ALEMBIC_DIR),
+    so this works no matter the process working directory.
     """
     cfg = Config()
     cfg.set_main_option("script_location", _ALEMBIC_DIR)
