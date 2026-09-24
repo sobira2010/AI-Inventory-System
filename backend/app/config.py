@@ -1,3 +1,4 @@
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 import json
@@ -25,6 +26,16 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-2.0-flash"
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_MODEL: str = "nvidia/nemotron-3-super-120b-a12b:free"
+
+    @model_validator(mode="after")
+    def _enforce_production_postgres(self) -> "Settings":
+        """Refuse to run production on anything but PostgreSQL.
+
+        Runs on every Settings instantiation (not just module import), so a
+        bad DATABASE_URL on Render can never be silently ignored.
+        """
+        _validate_production_database(self)
+        return self
 
     @property
     def database_url_resolved(self) -> str:
@@ -77,15 +88,13 @@ class Settings(BaseSettings):
         return origins
 
 
-settings = Settings()
+def _validate_production_database(s: "Settings") -> None:
+    """Fail fast on Render unless the app is pointed at PostgreSQL.
 
-
-def _validate_production_database(s: Settings) -> None:
-    """Fail fast on Render if the app is pointed at SQLite.
-
-    A SQLite DATABASE_URL in production surfaces only at request time as a
-    confusing "(sqlite3.OperationalError) no such table: users". Refuse to
-    start instead, with an actionable message. Local development (where the
+    A SQLite (or any non-PostgreSQL) DATABASE_URL in production surfaces only
+    at request time as a confusing "(sqlite3.OperationalError) no such table:
+    users". Refuse to start instead, with an actionable message, so production
+    can never silently fall back to SQLite. Local development (where the
     RENDER env vars are absent) is unaffected and keeps working with SQLite.
     """
     on_render = bool(
@@ -93,16 +102,19 @@ def _validate_production_database(s: Settings) -> None:
         or os.getenv("RENDER_SERVICE_ID")
         or os.getenv("RENDER_EXTERNAL_URL")
     )
-    url = (s.database_url_resolved or "").lower()
-    if on_render and (not url or url.startswith("sqlite")):
+    if not on_render:
+        return
+    url = (s.database_url_resolved or "").strip().lower()
+    if not url.startswith(("postgresql://", "postgresql+")):
         raise RuntimeError(
-            "Production misconfiguration: DATABASE_URL is a SQLite URL (or "
-            "missing), so the app would run on SQLite in production. Set "
-            "DATABASE_URL in the Render dashboard (Environment > Environment "
-            "Variables) to the Neon PostgreSQL connection string "
+            "Production misconfiguration: DATABASE_URL must be a PostgreSQL "
+            "(Neon) URL, but it is "
+            + ("empty" if not url else "set to a non-PostgreSQL URL (e.g. SQLite)")
+            + ". Set DATABASE_URL in the Render dashboard (Environment > "
+            "Environment Variables) to the Neon PostgreSQL connection string "
             "(postgresql://...?sslmode=require) and redeploy. SQLite is not "
             "supported in production."
         )
 
 
-_validate_production_database(settings)
+settings = Settings()

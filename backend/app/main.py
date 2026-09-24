@@ -29,6 +29,19 @@ app.add_middleware(
 )
 app.add_middleware(CORSErrorResponseMiddleware)
 
+
+@app.on_event("startup")
+def init_database() -> None:
+    """Apply Alembic migrations so all tables exist (no-op when up to date).
+
+    Production (Neon PostgreSQL) must have the schema ready before the first
+    request; local SQLite development is skipped inside run_migrations().
+    """
+    from app.startup_db import run_migrations
+
+    run_migrations()
+
+
 # Include routers
 app.include_router(auth.router)
 app.include_router(products.router)
