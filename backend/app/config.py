@@ -2,6 +2,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 import json
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,20 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-2.0-flash"
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_MODEL: str = "nvidia/nemotron-3-super-120b-a12b:free"
+
+    @property
+    def database_url_resolved(self) -> str:
+        """DATABASE_URL with deployment-friendly normalization applied.
+
+        Neon (and some other providers) issue ``postgres://`` URLs; SQLAlchemy
+        2.x only understands the ``postgresql://`` dialect name, so normalize
+        the scheme instead of failing with "Can't load plugin
+        sqlalchemy.dialects:postgres" at engine creation.
+        """
+        url = (self.DATABASE_URL or "").strip()
+        if url.startswith("postgres://"):
+            url = "postgresql://" + url[len("postgres://"):]
+        return url
 
     @property
     def cors_origins_list(self) -> List[str]:
@@ -63,3 +78,31 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def _validate_production_database(s: Settings) -> None:
+    """Fail fast on Render if the app is pointed at SQLite.
+
+    A SQLite DATABASE_URL in production surfaces only at request time as a
+    confusing "(sqlite3.OperationalError) no such table: users". Refuse to
+    start instead, with an actionable message. Local development (where the
+    RENDER env vars are absent) is unaffected and keeps working with SQLite.
+    """
+    on_render = bool(
+        os.getenv("RENDER")
+        or os.getenv("RENDER_SERVICE_ID")
+        or os.getenv("RENDER_EXTERNAL_URL")
+    )
+    url = (s.database_url_resolved or "").lower()
+    if on_render and (not url or url.startswith("sqlite")):
+        raise RuntimeError(
+            "Production misconfiguration: DATABASE_URL is a SQLite URL (or "
+            "missing), so the app would run on SQLite in production. Set "
+            "DATABASE_URL in the Render dashboard (Environment > Environment "
+            "Variables) to the Neon PostgreSQL connection string "
+            "(postgresql://...?sslmode=require) and redeploy. SQLite is not "
+            "supported in production."
+        )
+
+
+_validate_production_database(settings)

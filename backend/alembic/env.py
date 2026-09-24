@@ -12,10 +12,15 @@ load_dotenv()
 
 # Import all models so Alembic can detect them
 from app.database import Base
+from app.config import settings
 from app.models import User, Product, Sale, StockHistory
 
 config = context.config
-config.set_main_option("sqlalchemy.url", os.getenv("DATABASE_URL", ""))
+# Use the resolved URL so postgres:// (Neon) is normalized to postgresql://.
+# %% escapes percent signs in passwords for configparser interpolation.
+config.set_main_option(
+    "sqlalchemy.url", settings.database_url_resolved.replace("%", "%%")
+)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
